@@ -245,21 +245,16 @@ function flatten(it) {
 }
 
 // 乙口径（10-21 用户裁：拆段贪心，只有素材首行带序号）。四档：
-//   main = 续行当主标题写（18px、主位有字）⇒ **现行模板零改动就能画**
-//   sub  = 续行只写副标题位（16px 小字、主位留空）⇒ 好看，但要模板把 a:if 放宽成 {{rNt || rNs}}
-//   one  = 一条素材只占一行（主标题 + 第一个 ≤17 字块），素材多时保住条数
-//   auto = 默认。main 档拆完 ≤8 行就用它（一句不丢）；超 8 行说明素材太多，退回 one 保住条数
+//   one  = **家默认**：一条素材只占一行（主标题 + 第一个 ≤17 字块）⇒ 屏上条数 = 话题数，绝不出现半句
+//   main = 续行当主标题写（18px、主位有字）⇒ 一句不丢，但 8 行上限会把尾部话题整条挤掉（留给 --fill 手动 A/B）
+//   sub  = 续行只写副标题位（16px 小字、主位留空）⇒ 主标题空的行被模板 a:if="{{rNt}}" 整行不画，等于丢内容，不可用
+//   auto = 和 one 同义。Actions 那步传的是 `--fill auto`（yml 里的兜底值），所以「默认摊法」必须落在 auto 上才作数
 function flattenYi(it, fill) {
   const src = sourcesOf(it);
   const groupsOf = (f) => src.map(s => rowsOf(s, HEAD, f));
   let groups, chosen = fill;
-  if (fill === 'one') groups = groupsOf('sub').map(g => [g[0]]);
-  else if (fill === 'main' || fill === 'sub') groups = groupsOf(fill);
-  else {
-    const gm = groupsOf('main');
-    chosen = gm.reduce((a, g) => a + g.length, 0) <= 8 ? 'auto→main' : 'auto→one';
-    groups = chosen === 'auto→main' ? gm : gm.map(g => [g[0]]);
-  }
+  if (fill === 'main' || fill === 'sub') groups = groupsOf(fill);
+  else { groups = groupsOf('sub').map(g => [g[0]]); chosen = fill === 'auto' ? 'auto→one' : fill; }
   const p = packGroups(groups, titleOf(it), '');
   p.keys.meta = metaOf(it, p.topics);
   p.chosen = chosen;
