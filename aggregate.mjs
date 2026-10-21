@@ -139,11 +139,12 @@ function rowsOf(text, seq, fill) {
     else rows.push(fill === 'main' ? { n: '', t: buf, s: '' } : { n: '', t: '', s: buf });
     buf = ''; bufSep = '';
   };
-  const cap = fill === 'main' ? CAP.t : CAP.s;
+  // 首行的副标题位永远是 17 字档；后面的续行按 fill 决定用 17（副位）还是 15（主位）
+  const limit = () => (rows[0].s === '' ? CAP.s : fill === 'main' ? CAP.t : CAP.s);
   for (const p of ps) {
     let t = p.txt;
-    if (buf && wlen(buf + bufSep + t) > cap) flush();
-    while (wlen(t) > cap) { const [a, b] = splitLong(t, cap); buf = a; flush(); t = b; }
+    if (buf && wlen(buf + bufSep + t) > limit()) flush();
+    while (wlen(t) > limit()) { const [a, b] = splitLong(t, limit()); buf = a; flush(); t = b; }
     buf = buf ? buf + bufSep + t : t;
     bufSep = p.sep;
   }
@@ -194,20 +195,33 @@ function sourcesOf(it) {
 // 现行一期口径（甲：照搬悟道原文，第一个逗号前当主标题、剩下整段当副标题）
 function flatten(it) {
   const rows = sourcesOf(it).map(s => splitSentence(s));
-  return pack(rows, titleOf(it), metaOf(it, Math.min(rows.length, 8)));
+  const p = pack(rows, titleOf(it), metaOf(it, Math.min(rows.length, 8)));
+  p.chosen = 'jia（每条一行、副标题整段照搬）';
+  return p;
 }
 
-// 乙口径（10-21 用户裁：拆段贪心，只有素材首行带序号）。三档：
-//   sub  = 一条素材拆成几行就上几行（格数够用时一句不丢）
-//   one  = 一条素材只占一行（主标题 + 第一个 ≤17 的字块），素材多时保住条数
-//   auto = 拆段总行数 ≤8 走 sub，否则走 one
+// 乙口径（10-21 用户裁：拆段贪心，只有素材首行带序号）。四档：
+//   main = 续行当主标题写（18px、主位有字）⇒ **现行模板零改动就能画**
+//   sub  = 续行只写副标题位（16px 小字、主位留空）⇒ 好看，但要模板把 a:if 放宽成 {{rNt || rNs}}
+//   one  = 一条素材只占一行（主标题 + 第一个 ≤17 字块），素材多时保住条数
+//   auto = 默认。main 档拆完 ≤8 行就用它（一句不丢）；超 8 行说明素材太多，退回 one 保住条数
 function flattenYi(it, fill) {
-  const groups = sourcesOf(it).map(s => rowsOf(s, HEAD, fill === 'main' ? 'main' : 'sub'));
-  const flat = groups.reduce((a, g) => a.concat(g), []);
-  const one = fill === 'one' || (fill === 'auto' && flat.length > 8);
-  const rows = one ? groups.map(g => g[0]) : flat;
+  const src = sourcesOf(it);
+  const flat = (f) => src.reduce((a, s) => a.concat(rowsOf(s, HEAD, f)), []);
+  const gSub = src.map(s => rowsOf(s, HEAD, 'sub'));
+  let rows, chosen = fill;
+  if (fill === 'sub') rows = flat('sub');
+  else if (fill === 'main') rows = flat('main');
+  else if (fill === 'one') rows = gSub.map(g => g[0]);
+  else {
+    const m = flat('main');
+    rows = m.length <= 8 ? m : gSub.map(g => g[0]);
+    chosen = m.length <= 8 ? 'auto→main' : 'auto→one';
+  }
   const kept = rows.slice(0, 8);
-  return pack(kept, titleOf(it), metaOf(it, kept.filter(r => r.n === HEAD).length));
+  const p = pack(kept, titleOf(it), metaOf(it, kept.filter(r => r.n === HEAD).length));
+  p.chosen = chosen;
+  return p;
 }
 
 function titleOf(it) {
@@ -295,7 +309,7 @@ async function main() {
   const fill = arg('fill', 'auto');
   const p = mode === 'jia' ? flatten(item) : flattenYi(item, fill);
   fs.writeFileSync(OUT + '/brief-' + item.type + '.json', JSON.stringify(p.keys, null, 2) + '\n');
-  console.log('brief-' + item.type + '.json 写出（摊法 ' + mode + '/续行档 ' + fill + '），27 键（非空 '
+  console.log('brief-' + item.type + '.json 写出（摊法 ' + mode + '，' + p.chosen + '），27 键（非空 '
     + Object.values(p.keys).filter(v => v !== '').length + '）'
     + ' ｜ ' + p.keys.title + ' ｜ ' + p.keys.meta + (p.over ? ' ｜ 超栏 ' + p.over : ' ｜ 无超栏'));
   if (arg('show', false)) {
