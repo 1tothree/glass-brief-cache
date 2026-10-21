@@ -304,7 +304,8 @@ async function main() {
   if (!item) throw new Error('悟道没返回这一期的 items（' + type + '）：' + cstDate() + ' 未到生成点或上游停服');
 
   fs.mkdirSync(OUT + '/cache', { recursive: true });
-  if (!local) fs.writeFileSync(OUT + '/cache/briefings-' + type + '-' + cstDate() + '.json', JSON.stringify(item));
+  // 悟道原始包只在本地留档（给 --local 复摊用，省额度）；Actions 里不写，免得仓库天天多塞一份上游原文。
+  if (!local && !process.env.GITHUB_ACTIONS) fs.writeFileSync(OUT + '/cache/briefings-' + type + '-' + cstDate() + '.json', JSON.stringify(item));
   const mode = arg('flatten', 'yi');
   const fill = arg('fill', 'auto');
   const p = mode === 'jia' ? flatten(item) : flattenYi(item, fill);
