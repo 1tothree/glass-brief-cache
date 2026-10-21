@@ -344,7 +344,7 @@ async function main() {
   // 悟道原始包只在本地留档（给 --local 复摊用，省额度）；Actions 里不写，免得仓库天天多塞一份上游原文。
   if (!local && !process.env.GITHUB_ACTIONS) fs.writeFileSync(OUT + '/cache/briefings-' + type + '-' + cstDate() + '.json', JSON.stringify(item));
   const mode = arg('flatten', 'yi');
-  const fill = arg('fill', 'auto');
+  const fill = arg('fill', 'one');
   const p = mode === 'jia' ? flatten(item) : flattenYi(item, fill);
   fs.writeFileSync(OUT + '/brief-' + item.type + '.json', JSON.stringify(p.keys, null, 2) + '\n');
   console.log('brief-' + item.type + '.json 写出（摊法 ' + mode + '，' + p.chosen + '），27 键（非空 '
