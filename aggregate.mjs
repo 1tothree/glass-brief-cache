@@ -225,14 +225,12 @@ const clean = (s) => String(s).replace(/[（(]\s*新闻[^）)]*[)）]/g, '').rep
 
 function sourcesOf(it) {
   const cf = ((it.marketSummary && it.marketSummary.capitalFlow) || '').replace(/\n/g, '').trim();
-  const hot = (it.hotTopics || []).map(h => h.title).filter(Boolean);
   const sources = [];
-  if (cf) {
-    for (const s of cf.split('。').map(clean).filter(Boolean)) sources.push(s);
-    for (const h of hot.map(clean).filter(Boolean)) sources.push(h);
-  } else {
-    for (const s of (it.coreSummary || '').replace(/\n/g, '').split(/[。；]/).map(clean).filter(Boolean)) sources.push(s);
-  }
+  if (cf) for (const s of cf.split('。').map(clean).filter(Boolean)) sources.push(s);
+  else for (const s of (it.coreSummary || '').replace(/\n/g, '').split(/[。；]/).map(clean).filter(Boolean)) sources.push(s);
+  // 10-21 用户裁 A：hotTopics 无论 capitalFlow 有没有都追加（原先只在 cf 非空时才带，
+  // 而盘前那期 cf 恒空 ⇒ 四条题材名整段丢掉、8 个槽只填 3 个）。题材名是原文照抄，不是拼句。
+  for (const h of (it.hotTopics || []).map(h => clean(h.title || '')).filter(Boolean)) sources.push(h);
   return sources;
 }
 
