@@ -34,6 +34,16 @@ on:
         description: 取哪一期（auto = 按 CST 时刻挑最近已生成的）
         default: auto
         required: false
+      fill:
+        description: 摊法（one = 一条话题一行；main = 按栏宽截行）
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - one
+          - main
+          - sub
 
 permissions:
   contents: write
@@ -51,7 +61,7 @@ jobs:
       # 免费档的 Actions 定时高峰会晚 5–30 分钟，所以盘前那期（09:00 生成、09:15 起上游停服，
       # 只有十五分钟窗）不进定时；二期 B 本来只给盘后加板块行，盘前维持一期现状。
       - name: 取数并摊平成 27 键
-        run: node aggregate.mjs --type "${{ github.event.inputs.type || 'auto' }}" --out data
+        run: node aggregate.mjs --type "${{ github.event.inputs.type || 'auto' }}" --fill "${{ github.event.inputs.fill || 'auto' }}" --out data
         env:
           WUDAO_API_KEY: ${{ secrets.WUDAO_API_KEY }}
 
@@ -61,3 +71,15 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data
           if git diff --cached --quiet; then echo "没有变化，跳过提交"; else git commit -m "brief $GITHUB_RUN_NUMBER" && git push; fi
+
+      # 冷文件首读实测 3.1–3.2 s（超插件 3000 ms 闸门、返回体是空的），第二次才 0.6–1.6 s。
+      # 眼镜端读的是 jsdelivr 边缘节点，所以推完之后必须由这里先打一次把它拽热。
+      # 注意：只能热到 runner 命中的那个节点，不保证与眼镜后端命中同一节点 ⇒ 降概率，不是保票。
+      - name: 预热 jsdelivr 边缘缓存
+        run: |
+          for t in opening midday closing evening; do
+            for i in 1 2; do
+              curl -s -o /dev/null -w "$t try$i %{http_code} %{time_total}s\n" \
+                "https://cdn.jsdelivr.net/gh/1tothree/glass-brief-cache@main/data/brief-$t.json"
+            done
+          done
