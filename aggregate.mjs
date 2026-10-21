@@ -152,6 +152,50 @@ function rowsOf(text, seq, fill) {
   return rows;
 }
 
+// 一屏两栏 × 3 行 ⇒ 四个槽箱：左页1(r1–r3)、右页1(r4–r6)、左页2(r7)、右页2(r8)。
+// 配额按「总行数在两栏间配平」算，不是先填满左栏：3 条摊成 2+1，8 条摊成 3+3+1+1。
+function caps(total) {
+  const t = Math.min(total, 8);
+  if (t <= 6) return [Math.ceil(t / 2), t - Math.ceil(t / 2), 0, 0];
+  const rem = t - 6;
+  return [3, 3, Math.ceil(rem / 2), rem - Math.ceil(rem / 2)];
+}
+
+// 一个话题的续行只待在它开头那一栏里，装不下就整段丢——绝不留到下一栏（那正是「一条话跨栏」）。
+function packGroups(groups, title, meta) {
+  const BIN = [[1, 2, 3], [4, 5, 6], [7], [8]];
+  const cap = caps(groups.reduce((a, g) => a + g.length, 0));
+  const slot = {};
+  let bi = 0;
+  for (const g of groups) {
+    while (bi < 4 && Object.keys(slot).filter(k => BIN[bi].includes(+k)).length >= cap[bi]) bi++;
+    if (bi >= 4) break;
+    for (const r of g) {
+      const used = BIN[bi].filter(i => slot[i]).length;
+      if (used >= cap[bi]) break;
+      slot[BIN[bi][used]] = r;
+    }
+  }
+  const kept = [];
+  for (let i = 1; i <= 8; i++) if (slot[i]) kept.push({ i, r: slot[i] });
+  const out = {};
+  let k = 0;
+  for (const x of kept) if (x.r.n === HEAD) x.r.n = String(++k);
+  out.title = title;
+  out.meta = meta;
+  for (let i = 1; i <= 8; i++) {
+    const r = slot[i];
+    out['r' + i + 'n'] = r ? (r.n === undefined ? String(i) : r.n) : '';
+    out['r' + i + 't'] = r ? r.t : '';
+    out['r' + i + 's'] = r ? r.s : '';
+  }
+  out.hasNext = (out.r7t || out.r7s || out.r8t || out.r8s) ? 'yes' : 'no';
+  const over = kept.map(x =>
+    (wlen(x.r.t) > CAP.t ? 'r' + x.i + 't 主 ' + wlen(x.r.t) + '/15 ' : '') +
+    (x.r.s && wlen(x.r.s) > CAP.s ? 'r' + x.i + 's 副 ' + wlen(x.r.s) + '/17 ' : '')).join('');
+  return { keys: out, rows: kept.length, topics: k, over };
+}
+
 function pack(rows, title, meta) {
   const kept = rows.slice(0, 8);
   const out = {};
@@ -207,19 +251,17 @@ function flatten(it) {
 //   auto = 默认。main 档拆完 ≤8 行就用它（一句不丢）；超 8 行说明素材太多，退回 one 保住条数
 function flattenYi(it, fill) {
   const src = sourcesOf(it);
-  const flat = (f) => src.reduce((a, s) => a.concat(rowsOf(s, HEAD, f)), []);
-  const gSub = src.map(s => rowsOf(s, HEAD, 'sub'));
-  let rows, chosen = fill;
-  if (fill === 'sub') rows = flat('sub');
-  else if (fill === 'main') rows = flat('main');
-  else if (fill === 'one') rows = gSub.map(g => g[0]);
+  const groupsOf = (f) => src.map(s => rowsOf(s, HEAD, f));
+  let groups, chosen = fill;
+  if (fill === 'one') groups = groupsOf('sub').map(g => [g[0]]);
+  else if (fill === 'main' || fill === 'sub') groups = groupsOf(fill);
   else {
-    const m = flat('main');
-    rows = m.length <= 8 ? m : gSub.map(g => g[0]);
-    chosen = m.length <= 8 ? 'auto→main' : 'auto→one';
+    const gm = groupsOf('main');
+    chosen = gm.reduce((a, g) => a + g.length, 0) <= 8 ? 'auto→main' : 'auto→one';
+    groups = chosen === 'auto→main' ? gm : gm.map(g => [g[0]]);
   }
-  const kept = rows.slice(0, 8);
-  const p = pack(kept, titleOf(it), metaOf(it, kept.filter(r => r.n === HEAD).length));
+  const p = packGroups(groups, titleOf(it), '');
+  p.keys.meta = metaOf(it, p.topics);
   p.chosen = chosen;
   return p;
 }
