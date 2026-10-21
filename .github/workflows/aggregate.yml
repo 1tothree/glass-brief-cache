@@ -1,0 +1,63 @@
+# 二期聚合器（备选②）：GitHub Actions 定时 + 仓库里一份静态 JSON
+#
+# 建仓前要清楚的三件事：
+#   1. 仓库必须是 **Public** —— 眼镜端插件要匿名 GET 得到那份 JSON，Private 仓的 raw  URL 带不了鉴权。
+#   2. 定时只在**默认分支**上生效，所以这份文件必须待在 main（或 master）里。
+#   3. 悟道 key 只进仓库 Secrets（Settings → Secrets and variables → Actions → `WUDAO_API_KEY`），
+#      别写进任何文件、别提交、别贴给助手。上游错误原文给的口径是 `Authorization: Bearer lb_xxx`。
+#
+# 产出物（push 完即写进仓库；**读的时候一律走 jsdelivr，不要直连 raw**）：
+#   https://cdn.jsdelivr.net/gh/<你的账号>/<仓库>@main/data/brief-closing.json     ← 插件 baseUrl 填 https://cdn.jsdelivr.net，endpoint 填 /gh/<账号>/<仓库>@main/data/brief-<type>.json
+#   /gh/<账号>/<仓库>@main/data/cache/…（板块/涨停池/龙虎榜缓存，#15 扩槽才用）
+# 控制台侧接法（推荐）：**一个 Open API 插件配 4 个工具**，每个工具指一个 brief-<type>.json，
+# 零入参 ⇒ 不会踩「可选参数传空串被上游拒绝」「自定义入参被丢掉」那两个已知坑，模型按口令选工具，仍是一次调用。
+#
+# 那两条未验项 10-21 11:0x 已打完（详见 2026-10-20/付费MCP数据样本对比.md §7.3）：
+#   G3 = **过，但 raw 直连不可用**：raw.githubusercontent.com 六次只成三次（败的一律 `Connection reset by peer`）；
+#        cdn.jsdelivr.net/gh/… 五次全成、295–1138 ms，都在 3000 ms 闸门内 ⇒ 用 CDN。
+#   插件吃不吃静态 JSON = **吃**：零入参 + GET + authType NONE，`toolOutput.response` 直接就是那 27 键。
+#   两条要注意：① jsdelivr `/gh/` 边缘缓存有分钟级 TTL ⇒ `meta` 里必须写数据自己的时刻，不是读取时刻；
+#        ② 重试不可行（第二次取数就是第三跳，播报会被顶成保护句），所以宁可换国内函数计算（备选④）也别靠重试。
+# 推这份文件本身要 PAT 带 `workflow` scope（10-21 那把临时 classic PAT 只有 public_repo，被 GitHub 拒），
+# 或者直接在网页 Add file 手动传一次；数据文件用 Contents API 推不受这个限制。
+
+name: brief-aggregate
+
+on:
+  schedule:
+    - cron: '5 4 * * 1-5'    # 12:05 CST 午盘
+    - cron: '35 7 * * 1-5'   # 15:35 CST 收盘
+    - cron: '5 13 * * 1-5'   # 21:05 CST 晚间
+  workflow_dispatch:
+    inputs:
+      type:
+        description: 取哪一期（auto = 按 CST 时刻挑最近已生成的）
+        default: auto
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  aggregate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # 免费档的 Actions 定时高峰会晚 5–30 分钟，所以盘前那期（09:00 生成、09:15 起上游停服，
+      # 只有十五分钟窗）不进定时；二期 B 本来只给盘后加板块行，盘前维持一期现状。
+      - name: 取数并摊平成 27 键
+        run: node aggregate.mjs --type "${{ github.event.inputs.type || 'auto' }}" --out data
+        env:
+          WUDAO_API_KEY: ${{ secrets.WUDAO_API_KEY }}
+
+      - name: 提交缓存
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data
+          if git diff --cached --quiet; then echo "没有变化，跳过提交"; else git commit -m "brief $GITHUB_RUN_NUMBER" && git push; fi
