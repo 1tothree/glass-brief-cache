@@ -35,12 +35,11 @@ on:
         default: auto
         required: false
       fill:
-        description: 摊法（one = 一条话题一行；main = 按栏宽截行）
+        description: 摊法（one = 一条话题一行，家默认；main = 一句不丢但会整条挤掉尾部话题；sub 会丢内容）
         required: false
-        default: auto
+        default: one
         type: choice
         options:
-          - auto
           - one
           - main
           - sub
@@ -72,11 +71,22 @@ jobs:
           git add data
           if git diff --cached --quiet; then echo "没有变化，跳过提交"; else git commit -m "brief $GITHUB_RUN_NUMBER" && git push; fi
 
-      # 冷文件首读实测 3.1–3.2 s（超插件 3000 ms 闸门、返回体是空的），第二次才 0.6–1.6 s。
-      # 眼镜端读的是 jsdelivr 边缘节点，所以推完之后必须由这里先打一次把它拽热。
-      # 注意：只能热到 runner 命中的那个节点，不保证与眼镜后端命中同一节点 ⇒ 降概率，不是保票。
-      - name: 预热 jsdelivr 边缘缓存
+      # 两条独立的坑，一次处理：
+      # ① 陈旧：jsdelivr 给 /gh/@main 的回包带 `Cache-Control: max-age=604800, s-maxage=43200`，
+      #    实测推完 4 分钟边缘仍是上一版（Age 5386 秒 = 1.5 小时）⇒ 眼镜会念旧稿。只有 purge 能立刻拽回。
+      #    ⚠ purge 必须等 commit 之后满 5 分钟再打：GitHub raw 自己也缓存 5 分钟，太早 purge 会让边缘回源撞上
+      #      raw 的旧缓存、把旧版又缓存 12 小时（10-21 13:15 与 13:26 两次都是这么废的，13:17 隔够才成）。
+      #    ⚠ purge 有频控：同一文件 ~42 分钟内只许一次（超了回 `{"throttled":true,"throttlingReset":2526}`，
+      #      而且**照样回 status:finished**，看着像成功其实没刷）。三个定时槽间隔 3 小时，一次跑只 purge 一次，够用。
+      # ② 冷：边缘没有副本时首读实测 3.1–3.2 s（超插件 3000 ms 闸门、返回体是空的），第二次才 0.6–1.6 s。
+      #    所以 purge 之后由这里连打两次把它拽热。只能热到 runner 命中的节点，不保证与眼镜后端同一节点 ⇒ 降概率，不是保票。
+      - name: 刷新并预热 jsdelivr 边缘缓存
         run: |
+          sleep 300
+          for t in opening midday closing evening; do
+            curl -s -o /dev/null "https://purge.jsdelivr.net/gh/1tothree/glass-brief-cache@main/data/brief-$t.json"
+          done
+          sleep 20
           for t in opening midday closing evening; do
             for i in 1 2; do
               curl -s -o /dev/null -w "$t try$i %{http_code} %{time_total}s\n" \
