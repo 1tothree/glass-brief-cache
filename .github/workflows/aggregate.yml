@@ -16,7 +16,9 @@
 #   G3 = **过，但 raw 直连不可用**：raw.githubusercontent.com 六次只成三次（败的一律 `Connection reset by peer`）；
 #        cdn.jsdelivr.net/gh/… 五次全成、295–1138 ms，都在 3000 ms 闸门内 ⇒ 用 CDN。
 #   插件吃不吃静态 JSON = **吃**：零入参 + GET + authType NONE，`toolOutput.response` 直接就是那 27 键。
-#   两条要注意：① jsdelivr `/gh/` 边缘缓存有分钟级 TTL ⇒ `meta` 里必须写数据自己的时刻，不是读取时刻；
+#   两条要注意：① jsdelivr `/gh/@main` 的回包实测 `Cache-Control: max-age=604800, s-maxage=43200`（12 小时），
+#        且它连「分支→commit」这一层解析都一起缓存 ⇒ 光靠过期等于让眼镜念一整套旧稿，`meta` 里必须写数据自己的时刻；
+#        刷新口径见 refresh-jsdelivr.mjs（判据 = 回读字节比对仓库，不是猜等多久）。
 #        ② 重试不可行（第二次取数就是第三跳，播报会被顶成保护句），所以宁可换国内函数计算（备选④）也别靠重试。
 # 推这份文件本身要 PAT 带 `workflow` scope（10-21 那把临时 classic PAT 只有 public_repo，被 GitHub 拒），
 # 或者直接在网页 Add file 手动传一次；数据文件用 Contents API 推不受这个限制。
@@ -71,25 +73,8 @@ jobs:
           git add data
           if git diff --cached --quiet; then echo "没有变化，跳过提交"; else git commit -m "brief $GITHUB_RUN_NUMBER" && git push; fi
 
-      # 两条独立的坑，一次处理：
-      # ① 陈旧：jsdelivr 给 /gh/@main 的回包带 `Cache-Control: max-age=604800, s-maxage=43200`，
-      #    实测推完 4 分钟边缘仍是上一版（Age 5386 秒 = 1.5 小时）⇒ 眼镜会念旧稿。只有 purge 能立刻拽回。
-      #    ⚠ purge 必须等 commit 之后满 5 分钟再打：GitHub raw 自己也缓存 5 分钟，太早 purge 会让边缘回源撞上
-      #      raw 的旧缓存、把旧版又缓存 12 小时（10-21 13:15 与 13:26 两次都是这么废的，13:17 隔够才成）。
-      #    ⚠ purge 有频控：同一文件 ~42 分钟内只许一次（超了回 `{"throttled":true,"throttlingReset":2526}`，
-      #      而且**照样回 status:finished**，看着像成功其实没刷）。三个定时槽间隔 3 小时，一次跑只 purge 一次，够用。
-      # ② 冷：边缘没有副本时首读实测 3.1–3.2 s（超插件 3000 ms 闸门、返回体是空的），第二次才 0.6–1.6 s。
-      #    所以 purge 之后由这里连打两次把它拽热。只能热到 runner 命中的节点，不保证与眼镜后端同一节点 ⇒ 降概率，不是保票。
+      # 刷新不写在这里，交给仓库根目录的 refresh-jsdelivr.mjs（10-21 运行 7 实测：这里原来那段
+      # `sleep 300` + 无差别 purge 反而把没改动的 brief-opening.json 刷回了旧稿，判据必须是回读字节比对，
+      # 不是猜等多久；细节和三条坑都记在那个脚本开头的注释里）。
       - name: 刷新并预热 jsdelivr 边缘缓存
-        run: |
-          sleep 300
-          for t in opening midday closing evening; do
-            curl -s -o /dev/null "https://purge.jsdelivr.net/gh/1tothree/glass-brief-cache@main/data/brief-$t.json"
-          done
-          sleep 20
-          for t in opening midday closing evening; do
-            for i in 1 2; do
-              curl -s -o /dev/null -w "$t try$i %{http_code} %{time_total}s\n" \
-                "https://cdn.jsdelivr.net/gh/1tothree/glass-brief-cache@main/data/brief-$t.json"
-            done
-          done
+        run: node refresh-jsdelivr.mjs
