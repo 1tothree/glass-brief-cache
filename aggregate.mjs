@@ -84,48 +84,138 @@ function splitSentence(s) {
 }
 
 // 屏的容量档：主标题 18px 单行 ≈15 字、副标题 16px 单行 ≈17 字（全角算 1、半角 2 算 1）。
-// 这里只用来在构建日志里报超栏，**不截断**：装不下的部分由屏上省略号收尾（用户 10-19 定）。
 function wlen(s) {
   let full = 0, half = 0;
   for (const ch of String(s || '')) { if (/[\x00-\xff]/.test(ch)) half++; else full++; }
   return full + Math.ceil(half / 2);
 }
+const CAP = { t: 15, s: 17 };
+
+// 摊法乙用的三件套：切段（保留原标点）→ 超长段从中间断（断点不落在数字/字母/百分号串里）→ 贪心合并回栏宽。
+function pieces(text) {
+  const out = [];
+  for (const m of String(text).matchAll(/[^，、]+[，、]?/g)) {
+    const sep = (m[0].match(/[，、]$/) || [''])[0];
+    const txt = m[0].slice(0, m[0].length - sep.length).trim();
+    if (txt) out.push({ txt, sep });
+  }
+  return out;
+}
+
+// 断点取「尽量装满栏宽」的前缀，再往回退到数串边界（不把 11 / 75.3 这类数字与紧随其后的半角劈开），
+// 这样 r6 那种 19 字主标题会断成「股票ETF已连续11个交易日」+「净流入（新闻7）」，而不是从数字中间切开。
+function splitLong(txt, cap) {
+  const cs = [...txt];
+  let acc = 0, i = 0;
+  for (; i < cs.length; i++) {
+    const w = /[\x00-\xff]/.test(cs[i]) ? 0.5 : 1;
+    if (acc + w > cap) break;
+    acc += w;
+  }
+  while (i > 1 && i < cs.length && /[\x00-\xff]/.test(cs[i - 1]) && /[\x00-\xff]/.test(cs[i])) i--;
+  // 别把数字和单位拆开：前半以数字收尾、后半以汉字起头时（「…创近9 / 个月天量」），整段数字挪到后半。
+  while (i > 0 && i < cs.length && /\d/.test(cs[i - 1]) && !/[\x00-\xff]/.test(cs[i])) i--;
+  if (i <= 0 || i >= cs.length) return [txt, ''];
+  return [cs.slice(0, i).join(''), cs.slice(i).join('')];
+}
+
+// seq 非空 = 这条素材的首行（带序号、占主标题位）；续行的字放哪一档由 fill 决定：
+//   'sub'  = 续行只写副标题位（17 字档，16px 小字），主位留空 ⇒ 需要模板把 a:if 放宽成 {{rNt || rNs}}
+//   'main' = 续行当主标题写（15 字档，18px），不动模板就能画，只是和正经标题同字号
+function rowsOf(text, seq, fill) {
+  const ps = pieces(text);
+  if (!ps.length) return [];
+  let head = ps.shift();
+  while (wlen(head.txt) > CAP.t) {
+    const [a, b] = splitLong(head.txt, CAP.t);
+    head = { txt: a, sep: '' };
+    ps.unshift({ txt: b, sep: '' });
+  }
+  const rows = [{ n: seq, t: head.txt, s: '' }];
+  let buf = '', bufSep = '';
+  const flush = () => {
+    if (!buf) return;
+    if (!rows[0].s) rows[0].s = buf;
+    else rows.push(fill === 'main' ? { n: '', t: buf, s: '' } : { n: '', t: '', s: buf });
+    buf = ''; bufSep = '';
+  };
+  const cap = fill === 'main' ? CAP.t : CAP.s;
+  for (const p of ps) {
+    let t = p.txt;
+    if (buf && wlen(buf + bufSep + t) > cap) flush();
+    while (wlen(t) > cap) { const [a, b] = splitLong(t, cap); buf = a; flush(); t = b; }
+    buf = buf ? buf + bufSep + t : t;
+    bufSep = p.sep;
+  }
+  flush();
+  return rows;
+}
 
 function pack(rows, title, meta) {
   const kept = rows.slice(0, 8);
   const out = {};
+  let k = 0;
+  for (const r of kept) if (r.n === HEAD) r.n = String(++k);   // 续行不带号，所以号数跟着「素材」走
   out.title = title;
   out.meta = meta;
   for (let i = 1; i <= 8; i++) {
     const r = kept[i - 1];
-    out['r' + i + 'n'] = r ? String(i) : '';
+    out['r' + i + 'n'] = r ? (r.n === undefined ? String(i) : r.n) : '';
     out['r' + i + 't'] = r ? r.t : '';
     out['r' + i + 's'] = r ? r.s : '';
   }
-  out.hasNext = out.r7t ? 'yes' : 'no';
+  // 第 1 页 r1–r6、第 2 页 r7–r8（模板 24 行的 on-key-next 只改页码游标）
+  out.hasNext = (out.r7t || out.r7s || out.r8t || out.r8s) ? 'yes' : 'no';
   const over = kept.map((r, i) =>
-    (wlen(r.t) > 15 ? 'r' + (i + 1) + 't 主 ' + wlen(r.t) + '/15 ' : '') +
-    (r.s && wlen(r.s) > 17 ? 'r' + (i + 1) + 's 副 ' + wlen(r.s) + '/17 ' : '')).join('');
+    (wlen(r.t) > CAP.t ? 'r' + (i + 1) + 't 主 ' + wlen(r.t) + '/15 ' : '') +
+    (r.s && wlen(r.s) > CAP.s ? 'r' + (i + 1) + 's 副 ' + wlen(r.s) + '/17 ' : '')).join('');
   return { keys: out, rows: kept.length, over };
 }
 
-// 现行一期口径（A：照搬悟道原文，不改写、不数字数，超出部分交给屏上省略号）
-function flatten(it) {
+const HEAD = '\u0000head';   // rowsOf 用它标「这条素材的首行」，由 pack 换成连续序号
+
+// 一条素材一行（甲式：不改写、不拆段，超栏交给屏上省略号）
+// 原文里的「（新闻2、4）」是上游给模型看的引用标记，不能上屏 ⇒ 取素材时一律摘掉。
+const clean = (s) => String(s).replace(/[（(]\s*新闻[^）)]*[)）]/g, '').replace(/[，、；]+$/, '').trim();
+
+function sourcesOf(it) {
   const cf = ((it.marketSummary && it.marketSummary.capitalFlow) || '').replace(/\n/g, '').trim();
   const hot = (it.hotTopics || []).map(h => h.title).filter(Boolean);
-  const rows = [];
+  const sources = [];
   if (cf) {
-    for (const s of cf.split('。').map(x => x.trim()).filter(Boolean)) rows.push(splitSentence(s));
-    for (const h of hot) rows.push({ t: h, s: '' });
+    for (const s of cf.split('。').map(clean).filter(Boolean)) sources.push(s);
+    for (const h of hot.map(clean).filter(Boolean)) sources.push(h);
   } else {
-    for (const s of (it.coreSummary || '').replace(/\n/g, '').split(/[。；]/).map(x => x.trim()).filter(Boolean)) {
-      rows.push(splitSentence(s));
-    }
+    for (const s of (it.coreSummary || '').replace(/\n/g, '').split(/[。；]/).map(clean).filter(Boolean)) sources.push(s);
   }
+  return sources;
+}
+
+// 现行一期口径（甲：照搬悟道原文，第一个逗号前当主标题、剩下整段当副标题）
+function flatten(it) {
+  const rows = sourcesOf(it).map(s => splitSentence(s));
+  return pack(rows, titleOf(it), metaOf(it, Math.min(rows.length, 8)));
+}
+
+// 乙口径（10-21 用户裁：拆段贪心，只有素材首行带序号）。三档：
+//   sub  = 一条素材拆成几行就上几行（格数够用时一句不丢）
+//   one  = 一条素材只占一行（主标题 + 第一个 ≤17 的字块），素材多时保住条数
+//   auto = 拆段总行数 ≤8 走 sub，否则走 one
+function flattenYi(it, fill) {
+  const groups = sourcesOf(it).map(s => rowsOf(s, HEAD, fill === 'main' ? 'main' : 'sub'));
+  const flat = groups.reduce((a, g) => a.concat(g), []);
+  const one = fill === 'one' || (fill === 'auto' && flat.length > 8);
+  const rows = one ? groups.map(g => g[0]) : flat;
+  const kept = rows.slice(0, 8);
+  return pack(kept, titleOf(it), metaOf(it, kept.filter(r => r.n === HEAD).length));
+}
+
+function titleOf(it) {
   const date = /^\d{4}-\d{2}-\d{2}$/.test(String(it.date)) ? it.date : '';
-  const title = (PERIOD_NAME[it.type] || '简报') + (date ? ' · ' + date.slice(5) : '');
-  const meta = '共 ' + Math.min(rows.length, 8) + ' 条 · ' + (/^\d{2}:\d{2}$/.test(String(it.time)) ? it.time : '');
-  return pack(rows, title, meta);
+  return (PERIOD_NAME[it.type] || '简报') + (date ? ' · ' + date.slice(5) : '');
+}
+function metaOf(it, n) {
+  return '共 ' + n + ' 条 · ' + (/^\d{2}:\d{2}$/.test(String(it.time)) ? it.time : '');
 }
 
 // 悟道空窗用的 B 式（Pipeworx 免 key）：**每行都是拼句，不是任何人的原文**，
@@ -200,10 +290,23 @@ async function main() {
   if (!item) throw new Error('悟道没返回这一期的 items（' + type + '）：' + cstDate() + ' 未到生成点或上游停服');
 
   fs.mkdirSync(OUT + '/cache', { recursive: true });
-  const p = flatten(item);
+  if (!local) fs.writeFileSync(OUT + '/cache/briefings-' + type + '-' + cstDate() + '.json', JSON.stringify(item));
+  const mode = arg('flatten', 'yi');
+  const fill = arg('fill', 'auto');
+  const p = mode === 'jia' ? flatten(item) : flattenYi(item, fill);
   fs.writeFileSync(OUT + '/brief-' + item.type + '.json', JSON.stringify(p.keys, null, 2) + '\n');
-  console.log('brief-' + item.type + '.json 写出，27 键（非空 ' + Object.values(p.keys).filter(v => v !== '').length + '）'
-    + ' ｜ ' + p.keys.title + ' ｜ ' + p.keys.meta + (p.over ? ' ｜ 超栏 ' + p.over : ''));
+  console.log('brief-' + item.type + '.json 写出（摊法 ' + mode + '/续行档 ' + fill + '），27 键（非空 '
+    + Object.values(p.keys).filter(v => v !== '').length + '）'
+    + ' ｜ ' + p.keys.title + ' ｜ ' + p.keys.meta + (p.over ? ' ｜ 超栏 ' + p.over : ' ｜ 无超栏'));
+  if (arg('show', false)) {
+    for (let i = 1; i <= 8; i++) {
+      const n = p.keys['r' + i + 'n'], t = p.keys['r' + i + 't'], s = p.keys['r' + i + 's'];
+      console.log('  r' + i + ' 号' + (n || '-').padEnd(3)
+        + ' 主' + String(wlen(t)).padStart(2) + '/15 「' + t + '」'
+        + ' 副' + String(wlen(s)).padStart(2) + '/17 「' + s + '」');
+    }
+    console.log('  hasNext=' + p.keys.hasNext);
+  }
 
   if (local) return;
 
