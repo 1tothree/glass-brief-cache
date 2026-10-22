@@ -336,7 +336,9 @@ async function main() {
       { type, detailLevel: 'standard', format: 'json' }, 20000,
       { Authorization: 'Bearer ' + key })));
   }
-  if (!item) throw new Error('悟道没返回这一期的 items（' + type + '）：' + cstDate() + ' 未到生成点或上游停服');
+  // GitHub 会把错过的定时槽延后几小时补跑（10-21 运行 10 = 01:58 CST 补跑，`auto` 挑了当天还没生成的 closing）。
+  // 那不是故障：这里 exit 0 跳过，让后面的刷新步骤照常把已有数据对齐边缘，别把整条 job 判红。
+  if (!item) { const e = new Error('SKIP: 悟道没返回这一期的 items（' + type + '）：' + cstDate() + ' 未到生成点或上游停服'); e.skip = true; throw e; }
 
   fs.mkdirSync(OUT + '/cache', { recursive: true });
   // 悟道原始包只在本地留档（给 --local 复摊用，省额度）；Actions 里不写，免得仓库天天多塞一份上游原文。
@@ -375,4 +377,7 @@ async function main() {
   ]);
 }
 
-main().catch(e => { console.error('FAIL: ' + e.message); process.exit(1); });
+main().catch(e => {
+  if (e.skip) { console.log(e.message); process.exit(0); }
+  console.error('FAIL: ' + e.message); process.exit(1);
+});
